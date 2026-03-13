@@ -56,7 +56,7 @@ class FakeResponseOnlyEvent:
         self.output = [SimpleNamespace(type='message', content=[FakeTextPart(text)])]
 
 
-async def _run_loop(events, *, config_data=None):
+async def _run_loop(events, *, config_data=None, send_meta=None):
     async def process(_request):
         for event in events:
             yield event
@@ -96,6 +96,7 @@ async def _run_loop(events, *, config_data=None):
 
     request = SimpleNamespace(user_id='user_1', session_id='session_1')
     meta = {'response_url': 'https://example.com/response'}
+    meta.update(send_meta or {})
     await channel._run_process_loop(request, 'chat_1', meta)
     return sent_messages, sent_parts, reply_sent
 
@@ -110,9 +111,12 @@ def test_run_process_loop_streams_full_text_and_finishes_message_stream():
         ]
         sent_messages, sent_parts, reply_sent = await _run_loop(events)
 
+        stream_ids = [item['meta'].get('stream', {}).get('id') for item in sent_messages]
         assert [item['text'] for item in sent_messages] == ['你', '你好', '你好']
         assert [item['meta'].get('msgtype') for item in sent_messages] == ['stream', 'stream', 'stream']
         assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, False, True]
+        assert stream_ids[0]
+        assert stream_ids == [stream_ids[0], stream_ids[0], stream_ids[0]]
         assert sent_parts == []
         assert reply_sent == [('wecom', 'user_1', 'session_1')]
 
@@ -133,8 +137,11 @@ def test_run_process_loop_stream_completion_keeps_non_text_parts_only_and_marks_
         ]
         sent_messages, sent_parts, _ = await _run_loop(events)
 
+        stream_ids = [item['meta'].get('stream', {}).get('id') for item in sent_messages]
         assert [item['text'] for item in sent_messages] == ['hello ', 'hello world', 'hello world']
         assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, False, True]
+        assert stream_ids[0]
+        assert stream_ids == [stream_ids[0], stream_ids[0], stream_ids[0]]
         assert len(sent_parts) == 1
         assert len(sent_parts[0]['parts']) == 1
         assert sent_parts[0]['parts'][0].type == 'file'
@@ -155,6 +162,24 @@ def test_run_process_loop_stream_keeps_prefix_visible_across_refreshes():
 
         assert [item['text'] for item in sent_messages] == ['AI: 你', 'AI: 你好', 'AI: 你好']
         assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, False, True]
+
+    asyncio.run(run_case())
+
+
+def test_run_process_loop_stream_preserves_custom_stream_id():
+    async def run_case():
+        events = [
+            FakeMessageEvent(status='in_progress', message_id='msg_5', content=[FakeTextPart('A')]),
+            FakeMessageEvent(status='completed', message_id='msg_5', content=[FakeTextPart('AB')]),
+            FakeResponseEvent(),
+        ]
+        sent_messages, _, _ = await _run_loop(events, send_meta={'stream': {'id': 'custom-stream-id'}})
+
+        assert [item['meta'].get('stream', {}).get('id') for item in sent_messages] == [
+            'custom-stream-id',
+            'custom-stream-id',
+        ]
+        assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, True]
 
     asyncio.run(run_case())
 

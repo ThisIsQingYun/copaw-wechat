@@ -572,6 +572,7 @@ class WeComChannel(BaseChannel):
             return
 
         stream_payload = dict(stream_meta.get('stream') or {})
+        stream_payload['id'] = self._resolve_stream_id(event, stream_states, stream_payload, send_meta)
         stream_payload['content'] = display_text
         stream_payload['finish'] = finish
         stream_meta['stream'] = stream_payload
@@ -583,8 +584,9 @@ class WeComChannel(BaseChannel):
             stream_meta['msgtype'] = 'stream'
 
         logger.debug(
-            'wecom stream snapshot send: msgtype=%s finish=%s content_len=%s preview=%s',
+            'wecom stream snapshot send: msgtype=%s stream_id=%s finish=%s content_len=%s preview=%s',
             stream_meta.get('msgtype'),
+            stream_payload.get('id', ''),
             finish,
             len(display_text),
             display_text[:120],
@@ -594,6 +596,29 @@ class WeComChannel(BaseChannel):
         state['last_sent_text'] = display_text
         state['last_sent_finish'] = finish
         delivery_state['sent'] = True
+
+    def _resolve_stream_id(
+        self,
+        event: Any,
+        stream_states: dict[str, dict[str, Any]],
+        stream_payload: dict[str, Any],
+        send_meta: dict[str, Any],
+    ) -> str:
+        state = self._get_stream_state(event, stream_states)
+        configured_id = str(stream_payload.get('id') or '')
+        if configured_id:
+            state['stream_id'] = configured_id
+            return configured_id
+
+        existing_id = str(state.get('stream_id', '') or '')
+        if existing_id:
+            return existing_id
+
+        request_key = str((send_meta or {}).get('req_id') or 'request')
+        state_key = str(state.get('state_key', '') or '__default__')
+        generated_id = f'wecom-stream-{request_key}-{state_key}'
+        state['stream_id'] = generated_id
+        return generated_id
 
     def _extract_message_parts(self, event: Any) -> list[Any]:
         to_parts = getattr(self, '_message_to_content_parts', None)
@@ -610,11 +635,13 @@ class WeComChannel(BaseChannel):
         return stream_states.setdefault(
             key,
             {
+                'state_key': key,
                 'current_text': '',
                 'started': False,
                 'template_card_sent': False,
                 'last_sent_text': '',
                 'last_sent_finish': False,
+                'stream_id': '',
             },
         )
 
@@ -741,6 +768,7 @@ class WeComChannel(BaseChannel):
 
     def _get_transport_factory(self):
         return resolve_transport_factory(self.config)
+
 
 
 
