@@ -1,4 +1,5 @@
 ﻿import asyncio
+import logging
 
 from wecom.channel import WeComChannel
 from wecom.config import WeComConfig
@@ -43,6 +44,32 @@ def test_channel_start_launches_background_receive_loop_by_default():
         try:
             assert channel._receive_task is not None
             assert transport.sent[0]['cmd'] == 'aibot_subscribe'
+        finally:
+            await channel.stop()
+
+    asyncio.run(run_case())
+
+
+def test_channel_start_emits_diagnostic_logs(caplog):
+    async def run_case():
+        transport = BlockingTransport()
+        config = WeComConfig.from_mapping(
+            {
+                'bot_id': 'bot_123',
+                'secret': 'secret_456',
+                'transport_factory': lambda: transport,
+            }
+        )
+        channel = WeComChannel(process=None, config=config)
+        channel._enqueue = lambda payload: None
+
+        with caplog.at_level(logging.INFO):
+            await channel.start()
+        try:
+            messages = [record.getMessage() for record in caplog.records]
+            assert any('wecom channel starting' in message for message in messages)
+            assert any('wecom websocket connected' in message for message in messages)
+            assert any('wecom background receive loop started' in message for message in messages)
         finally:
             await channel.stop()
 

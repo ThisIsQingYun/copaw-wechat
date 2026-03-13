@@ -208,22 +208,49 @@ class WeComChannel(BaseChannel):
         return request
 
     async def start(self):
+        logger.info(
+            'wecom channel starting: enabled=%s websocket_url=%s auto_receive_background=%s has_enqueue=%s',
+            self.enabled,
+            self.config.websocket_url,
+            self.config.auto_receive_background,
+            self._enqueue is not None,
+        )
         if self._ws_client is None:
             self._ws_client = WeComWebSocketClient(
                 config=self.config,
                 transport_factory=self._get_transport_factory(),
             )
             await self._ws_client.connect()
+            logger.info('wecom websocket connected: bot_id=%s', (self.config.bot_id or '')[:12])
             if self.config.auto_receive_background and self._enqueue is not None and self._receive_task is None:
                 self._receive_task = asyncio.create_task(self.run_forever(), name='wecom-channel-run-forever')
+                logger.info('wecom background receive loop started')
+            else:
+                logger.warning(
+                    'wecom background receive loop not started: auto_receive_background=%s has_enqueue=%s receive_task_exists=%s',
+                    self.config.auto_receive_background,
+                    self._enqueue is not None,
+                    self._receive_task is not None,
+                )
         return None
 
     async def run_forever(self):
         if self._ws_client is None:
             self._ws_client = WeComWebSocketClient(config=self.config, transport_factory=self._get_transport_factory())
+        logger.info('wecom receive loop entering run_forever')
         await self._ws_client.run_forever(self._handle_envelope)
 
     async def _handle_envelope(self, envelope: InboundEnvelope):
+        body = envelope.body or {}
+        event = body.get('event') or {}
+        logger.info(
+            'wecom inbound envelope: cmd=%s req_id=%s msgtype=%s eventtype=%s chatid=%s',
+            envelope.cmd,
+            envelope.req_id,
+            body.get('msgtype', ''),
+            event.get('eventtype', ''),
+            body.get('chatid', ''),
+        )
         payload = self.service.build_enqueue_payload(envelope)
         payload = await self._media_store.persist_payload(payload)
         if self._enqueue is not None:
@@ -237,12 +264,14 @@ class WeComChannel(BaseChannel):
         return await self._handle_envelope(envelope)
 
     async def stop(self):
+        logger.info('wecom channel stopping')
         if self._receive_task is not None:
             self._receive_task.cancel()
             await asyncio.gather(self._receive_task, return_exceptions=True)
             self._receive_task = None
         if self._ws_client is not None:
             await self._ws_client.stop()
+        logger.info('wecom channel stopped')
         return None
 
     def handle_webhook_verification(self, query: dict[str, Any]) -> str:
@@ -534,6 +563,14 @@ class WeComChannel(BaseChannel):
         message = self._build_outbound_message(text, meta)
 
         response_url = meta.get('response_url')
+        logger.info(
+            'wecom outbound send: msgtype=%s mode=%s to_handle=%s has_response_url=%s text_len=%s',
+            message.msgtype,
+            getattr(message.mode, 'value', message.mode),
+            str(to_handle)[:64],
+            bool(response_url),
+            len(text or ''),
+        )
         if response_url:
             if message.msgtype == 'template_card':
                 return await self._response_client.send_template_card(str(response_url), message.payload['template_card'])
@@ -577,6 +614,8 @@ class WeComChannel(BaseChannel):
 
     def _get_transport_factory(self):
         return resolve_transport_factory(self.config)
+
+
 
 
 

@@ -1,12 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 from wecom.config import WeComConfig
 from wecom.models import InboundEnvelope
+
+logger = logging.getLogger(__name__)
 
 
 class WeComWebSocketClient:
@@ -23,6 +26,7 @@ class WeComWebSocketClient:
         return self._transport
 
     async def connect(self) -> None:
+        logger.info('wecom websocket opening: url=%s', self._config.websocket_url)
         candidate = self._transport_factory()
         self._transport = await candidate if inspect.isawaitable(candidate) else candidate
         self._stopped = False
@@ -34,6 +38,7 @@ class WeComWebSocketClient:
                 'secret': self._config.secret,
             },
         })
+        logger.info('wecom websocket subscribe sent: bot_id=%s', (self._config.bot_id or '')[:12])
 
     async def send_command(self, command: dict) -> None:
         await self._require_transport().send_json(command)
@@ -46,7 +51,9 @@ class WeComWebSocketClient:
 
     async def receive_one(self) -> InboundEnvelope:
         payload = await self._require_transport().recv_json()
-        return InboundEnvelope.from_dict(payload)
+        envelope = InboundEnvelope.from_dict(payload)
+        logger.info('wecom websocket frame received: cmd=%s req_id=%s', envelope.cmd, envelope.req_id)
+        return envelope
 
     async def dispatch_once(self, on_envelope) -> InboundEnvelope:
         envelope = await self.receive_one()
@@ -84,6 +91,7 @@ class WeComWebSocketClient:
             except Exception as exc:
                 reconnect_needed = True
                 last_error = exc
+                logger.warning('wecom websocket loop error, will reconnect=%s error=%s', self._config.auto_reconnect, exc)
             finally:
                 self._background_tasks.clear()
                 if self._transport is not None and not self._stopped:
@@ -104,6 +112,7 @@ class WeComWebSocketClient:
                 if last_error is not None:
                     raise last_error
                 break
+            logger.info('wecom websocket reconnecting after %s seconds', self._config.reconnect_delay_seconds)
             await self._sleep(self._config.reconnect_delay_seconds)
 
     async def _receive_loop(self, on_envelope):
@@ -118,6 +127,7 @@ class WeComWebSocketClient:
             await self.send_ping()
 
     async def stop(self) -> None:
+        logger.info('wecom websocket stopping')
         self._stopped = True
         for task in self._background_tasks:
             task.cancel()
@@ -127,6 +137,7 @@ class WeComWebSocketClient:
         if self._transport is not None:
             await self._transport.close()
             self._transport = None
+        logger.info('wecom websocket stopped')
 
     def should_reconnect(self) -> bool:
         return not self._stopped
@@ -139,3 +150,4 @@ class WeComWebSocketClient:
     @staticmethod
     def _new_req_id(prefix: str) -> str:
         return f'{prefix}-{uuid4().hex}'
+
