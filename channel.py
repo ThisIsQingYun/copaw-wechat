@@ -412,15 +412,27 @@ class WeComChannel(BaseChannel):
         stream_states: dict[str, dict[str, Any]],
         delivery_state: dict[str, bool],
     ) -> None:
-        chunk = self._extract_stream_text_from_content(event, stream_states)
-        if chunk:
-            await self._send_stream_chunk(
+        state, changed = self._update_stream_state_from_content(event, stream_states)
+        status = str(getattr(event, 'status', '') or '')
+        if status == 'completed':
+            if state.get('started') or changed:
+                await self._send_stream_snapshot(
+                    to_handle,
+                    send_meta,
+                    stream_states,
+                    delivery_state,
+                    event,
+                    finish=True,
+                )
+            return
+        if changed:
+            await self._send_stream_snapshot(
                 to_handle,
-                chunk,
                 send_meta,
                 stream_states,
                 delivery_state,
                 event,
+                finish=False,
             )
 
     async def _handle_stream_message_event(
@@ -431,25 +443,36 @@ class WeComChannel(BaseChannel):
         stream_states: dict[str, dict[str, Any]],
         delivery_state: dict[str, bool],
     ) -> None:
-        chunk = self._extract_stream_text_from_message(event, stream_states)
-        if chunk:
-            await self._send_stream_chunk(
+        state, changed = self._update_stream_state_from_message(event, stream_states)
+        status = str(getattr(event, 'status', '') or '')
+
+        if status == 'completed':
+            if state.get('started'):
+                await self._send_stream_snapshot(
+                    to_handle,
+                    send_meta,
+                    stream_states,
+                    delivery_state,
+                    event,
+                    finish=True,
+                )
+        elif changed:
+            await self._send_stream_snapshot(
                 to_handle,
-                chunk,
                 send_meta,
                 stream_states,
                 delivery_state,
                 event,
+                finish=False,
             )
 
-        if str(getattr(event, 'status', '') or '') != 'completed':
+        if status != 'completed':
             return
 
         parts = self._extract_message_parts(event)
         if not parts:
             return
 
-        state = self._get_stream_state(event, stream_states)
         if state.get('started'):
             parts = [
                 part
@@ -462,41 +485,46 @@ class WeComChannel(BaseChannel):
         await self.send_content_parts(to_handle, parts, send_meta)
         delivery_state['sent'] = True
 
-    def _extract_stream_text_from_content(
+    def _update_stream_state_from_content(
         self,
         event: Any,
         stream_states: dict[str, dict[str, Any]],
-    ) -> str:
+    ) -> tuple[dict[str, Any], bool]:
         status = str(getattr(event, 'status', '') or '')
+        state = self._get_stream_state(event, stream_states)
         if status not in ('in_progress', 'completed'):
-            return ''
+            return state, False
 
         content_type = str(getattr(event, 'type', '') or '')
         if content_type not in ('text', 'refusal'):
-            return ''
+            return state, False
 
-        state = self._get_stream_state(event, stream_states)
         text = self._get_text_like_value(event)
         if not text:
-            return ''
+            return state, False
 
+        current_text = str(state.get('current_text', '') or '')
         if bool(getattr(event, 'delta', False)):
-            state['sent_text'] += text
-            return text
+            next_text = current_text + text
+        else:
+            next_text = text
 
-        return self._diff_stream_text(text, state)
+        changed = next_text != current_text
+        state['current_text'] = next_text
+        return state, changed
 
-    def _extract_stream_text_from_message(
+    def _update_stream_state_from_message(
         self,
         event: Any,
         stream_states: dict[str, dict[str, Any]],
-    ) -> str:
+    ) -> tuple[dict[str, Any], bool]:
         status = str(getattr(event, 'status', '') or '')
-        if status not in ('in_progress', 'completed'):
-            return ''
-
         state = self._get_stream_state(event, stream_states)
+        if status not in ('in_progress', 'completed'):
+            return state, False
+
         content = list(getattr(event, 'content', None) or [])
+        current_text = str(state.get('current_text', '') or '')
         has_delta = any(bool(getattr(item, 'delta', False)) for item in content)
 
         if has_delta:
@@ -505,37 +533,44 @@ class WeComChannel(BaseChannel):
                 for item in content
                 if bool(getattr(item, 'delta', False))
             )
-            if delta_text:
-                state['sent_text'] += delta_text
-            return delta_text
+            if not delta_text:
+                return state, False
+            next_text = current_text + delta_text
+        else:
+            next_text = ''.join(self._get_text_like_value(item) for item in content)
+            if not next_text:
+                return state, False
 
-        if status == 'completed' and not state.get('started'):
-            return ''
+        changed = next_text != current_text
+        state['current_text'] = next_text
+        return state, changed
 
-        full_text = ''.join(self._get_text_like_value(item) for item in content)
-        if not full_text:
-            return ''
-        return self._diff_stream_text(full_text, state)
-
-    async def _send_stream_chunk(
+    async def _send_stream_snapshot(
         self,
         to_handle: str,
-        text: str,
         send_meta: dict[str, Any],
         stream_states: dict[str, dict[str, Any]],
         delivery_state: dict[str, bool],
         event: Any,
+        *,
+        finish: bool,
     ) -> None:
-        if not text:
+        state = self._get_stream_state(event, stream_states)
+        base_text = str(state.get('current_text', '') or '')
+        if not base_text:
             return
 
-        state = self._get_stream_state(event, stream_states)
         stream_meta = dict(send_meta or {})
         prefix = stream_meta.get('bot_prefix') or getattr(self, 'bot_prefix', '') or ''
-        chunk = text
-        if prefix and not state.get('prefix_sent'):
-            chunk = prefix + chunk
-            state['prefix_sent'] = True
+        display_text = f'{prefix}{base_text}' if prefix else base_text
+
+        if display_text == state.get('last_sent_text') and finish == bool(state.get('last_sent_finish', False)):
+            return
+
+        stream_payload = dict(stream_meta.get('stream') or {})
+        stream_payload['content'] = display_text
+        stream_payload['finish'] = finish
+        stream_meta['stream'] = stream_payload
 
         if stream_meta.get('template_card') and not state.get('template_card_sent'):
             stream_meta['msgtype'] = 'stream_with_template_card'
@@ -544,13 +579,16 @@ class WeComChannel(BaseChannel):
             stream_meta['msgtype'] = 'stream'
 
         logger.debug(
-            'wecom stream chunk send: msgtype=%s chunk_len=%s preview=%s',
+            'wecom stream snapshot send: msgtype=%s finish=%s content_len=%s preview=%s',
             stream_meta.get('msgtype'),
-            len(chunk),
-            chunk[:120],
+            finish,
+            len(display_text),
+            display_text[:120],
         )
-        await self.send(to_handle, chunk, stream_meta)
+        await self.send(to_handle, display_text, stream_meta)
         state['started'] = True
+        state['last_sent_text'] = display_text
+        state['last_sent_finish'] = finish
         delivery_state['sent'] = True
 
     def _extract_message_parts(self, event: Any) -> list[Any]:
@@ -568,10 +606,11 @@ class WeComChannel(BaseChannel):
         return stream_states.setdefault(
             key,
             {
-                'sent_text': '',
+                'current_text': '',
                 'started': False,
-                'prefix_sent': False,
                 'template_card_sent': False,
+                'last_sent_text': '',
+                'last_sent_finish': False,
             },
         )
 
@@ -584,18 +623,6 @@ class WeComChannel(BaseChannel):
             return str(getattr(item, 'refusal', '') or '')
         return ''
 
-    @staticmethod
-    def _diff_stream_text(full_text: str, state: dict[str, Any]) -> str:
-        previous = str(state.get('sent_text', '') or '')
-        if full_text.startswith(previous):
-            delta = full_text[len(previous):]
-            state['sent_text'] = full_text
-            return delta
-        if not state.get('started'):
-            state['sent_text'] = full_text
-            return full_text
-        state['sent_text'] = full_text
-        return ''
 
     async def _send_final_response_output_if_needed(
         self,
@@ -710,6 +737,9 @@ class WeComChannel(BaseChannel):
 
     def _get_transport_factory(self):
         return resolve_transport_factory(self.config)
+
+
+
 
 
 

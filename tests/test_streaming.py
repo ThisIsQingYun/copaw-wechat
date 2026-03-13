@@ -56,12 +56,14 @@ class FakeResponseOnlyEvent:
         self.output = [SimpleNamespace(type='message', content=[FakeTextPart(text)])]
 
 
-async def _run_loop(events):
+async def _run_loop(events, *, config_data=None):
     async def process(_request):
         for event in events:
             yield event
 
-    config = WeComConfig.from_mapping({'bot_id': 'bot_123', 'secret': 'secret_456'})
+    config_mapping = {'bot_id': 'bot_123', 'secret': 'secret_456'}
+    config_mapping.update(config_data or {})
+    config = WeComConfig.from_mapping(config_mapping)
     channel = WeComChannel(process=process, config=config)
 
     sent_messages = []
@@ -98,7 +100,7 @@ async def _run_loop(events):
     return sent_messages, sent_parts, reply_sent
 
 
-def test_run_process_loop_streams_message_deltas_without_duplicate_final_text():
+def test_run_process_loop_streams_full_text_and_finishes_message_stream():
     async def run_case():
         events = [
             FakeMessageEvent(status='in_progress', message_id='msg_1', content=[FakeTextPart('你')]),
@@ -108,15 +110,16 @@ def test_run_process_loop_streams_message_deltas_without_duplicate_final_text():
         ]
         sent_messages, sent_parts, reply_sent = await _run_loop(events)
 
-        assert [item['text'] for item in sent_messages] == ['你', '好']
-        assert all(item['meta'].get('msgtype') == 'stream' for item in sent_messages)
+        assert [item['text'] for item in sent_messages] == ['你', '你好', '你好']
+        assert [item['meta'].get('msgtype') for item in sent_messages] == ['stream', 'stream', 'stream']
+        assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, False, True]
         assert sent_parts == []
         assert reply_sent == [('wecom', 'user_1', 'session_1')]
 
     asyncio.run(run_case())
 
 
-def test_run_process_loop_stream_completion_keeps_non_text_parts_only():
+def test_run_process_loop_stream_completion_keeps_non_text_parts_only_and_marks_finish():
     async def run_case():
         events = [
             FakeContentEvent(status='in_progress', message_id='msg_2', text='hello '),
@@ -130,11 +133,28 @@ def test_run_process_loop_stream_completion_keeps_non_text_parts_only():
         ]
         sent_messages, sent_parts, _ = await _run_loop(events)
 
-        assert [item['text'] for item in sent_messages] == ['hello ', 'world']
+        assert [item['text'] for item in sent_messages] == ['hello ', 'hello world', 'hello world']
+        assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, False, True]
         assert len(sent_parts) == 1
         assert len(sent_parts[0]['parts']) == 1
         assert sent_parts[0]['parts'][0].type == 'file'
         assert sent_parts[0]['parts'][0].file_url == 'https://example.com/result.txt'
+
+    asyncio.run(run_case())
+
+
+def test_run_process_loop_stream_keeps_prefix_visible_across_refreshes():
+    async def run_case():
+        events = [
+            FakeMessageEvent(status='in_progress', message_id='msg_4', content=[FakeTextPart('你')]),
+            FakeMessageEvent(status='in_progress', message_id='msg_4', content=[FakeTextPart('你好')]),
+            FakeMessageEvent(status='completed', message_id='msg_4', content=[FakeTextPart('你好')]),
+            FakeResponseEvent(),
+        ]
+        sent_messages, _, _ = await _run_loop(events, config_data={'bot_prefix': 'AI: '})
+
+        assert [item['text'] for item in sent_messages] == ['AI: 你', 'AI: 你好', 'AI: 你好']
+        assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, False, True]
 
     asyncio.run(run_case())
 
