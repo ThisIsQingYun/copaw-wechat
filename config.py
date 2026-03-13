@@ -4,6 +4,27 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 
+_POLICY_ALIASES = {
+    'open': 'open',
+    'allowlist': 'allowlist',
+    '开放': 'open',
+    '白名单列表': 'allowlist',
+}
+
+
+def _normalize_policy(value: Any, *, field_name: str) -> str:
+    normalized = str(value or 'open').strip().lower()
+    if normalized in _POLICY_ALIASES:
+        return _POLICY_ALIASES[normalized]
+
+    raw = str(value or 'open').strip()
+    if raw in _POLICY_ALIASES:
+        return _POLICY_ALIASES[raw]
+
+    allowed = ', '.join(['open', 'allowlist', '开放', '白名单列表'])
+    raise ValueError(f'{field_name} must be one of: {allowed}')
+
+
 @dataclass(slots=True)
 class WeComConfig:
     bot_id: str
@@ -47,8 +68,8 @@ class WeComConfig:
             bot_prefix=str(data.get('bot_prefix', '')),
             filter_tool_messages=bool(data.get('filter_tool_messages', False)),
             filter_thinking=bool(data.get('filter_thinking', False)),
-            dm_policy=str(data.get('dm_policy', 'open')),
-            group_policy=str(data.get('group_policy', 'open')),
+            dm_policy=_normalize_policy(data.get('dm_policy', 'open'), field_name='dm_policy'),
+            group_policy=_normalize_policy(data.get('group_policy', 'open'), field_name='group_policy'),
             allow_from=[str(item) for item in allow_from],
             deny_message=str(data.get('deny_message', '')),
             require_mention=bool(data.get('require_mention', False)),

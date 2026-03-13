@@ -86,6 +86,25 @@ pip install -r requirements.txt
 - 如果你只使用长连接模式，`token`、`encoding_aes_key`、`receive_id` 可以先留空。
 - `media_dir` 用于保存接收到的图片和文件。
 - Web 控制台不会自动生成自定义渠道专用表单，建议先把上面的字段预写进 `config.json`，再到 Web 里编辑。
+- `dm_policy` 和 `group_policy` 的标准值与内置渠道一致：`open`、`allowlist`。
+- 为了兼容 Web 中自定义渠道的文本输入方式，插件也接受中文填写：`开放`、`白名单列表`，并会自动转换成 `open`、`allowlist`。
+
+## 插件更新方式
+
+如果你已经通过 `git clone` 安装了本插件，后续更新直接在 `wecom/` 目录执行：
+
+```bash
+cd ~/.copaw/custom_channels/wecom
+git pull --ff-only origin main
+pip install -r requirements.txt
+```
+
+更新后建议再做两件事：
+
+- 对照最新的 `README.md` 或 `config.example.json`，确认你的 `config.json` 里是否需要补充新字段。
+- 重启 `copaw`，让新版本插件重新加载。
+
+如果你的本地仓库改过文件，`git pull` 前请先自行提交、暂存或处理冲突。
 
 ## 当前支持的消息类型
 
@@ -98,6 +117,7 @@ pip install -r requirements.txt
 - `接收音频 = 部分` 的含义是：当前支持企微语音消息的转写内容接入，但还不生成独立音频文件。
 - 发送侧当前支持文本相关能力，包括 `text`、`markdown`、`stream`、`template_card`、欢迎语和卡片更新；表格里“发送文本”按“通用文本回复能力”统计。
 - 当前 `media_dir` 会落盘 `image` 和 `file` 类型附件；如果长连接回调里附件带 `aeskey`，插件会先解密再保存。
+- `发送图片/视频/音频/文件` 当前为否，主要是因为企微智能机器人官方发送/回复文档未开放这些发送消息体类型。
 
 ## 项目结构
 
@@ -131,13 +151,14 @@ wecom/
 |   |-- client.py
 |   `-- transport.py
 `-- tests/
+    |-- test_config.py
     `-- test_media_store.py
 ```
 
 ## 关键文件说明
 
 - `channel.py`：`copaw` 渠道主入口
-- `config.py`：渠道配置模型
+- `config.py`：渠道配置模型与策略值标准化
 - `media_store.py`：图片和文件下载、解密、落盘
 - `webhook.py`：Webhook 加解密与回调处理
 - `active_reply.py`：`response_url` 主动回复
