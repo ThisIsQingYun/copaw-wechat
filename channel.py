@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import asyncio
+import logging
 from os import getenv
 from typing import Any
 
@@ -24,6 +25,8 @@ from wecom.runtime_compat import MissingRuntimeDependency, load_copaw_symbols
 from wecom.webhook import WeComWebhookHandler
 from wecom.ws.client import WeComWebSocketClient
 from wecom.ws.transport import resolve_transport_factory
+
+logger = logging.getLogger(__name__)
 
 
 try:
@@ -305,6 +308,227 @@ class WeComChannel(BaseChannel):
             mode = DeliveryMode.SEND
         return OutboundMessage(msgtype=msgtype, payload=payload, mode=mode)
 
+    async def _run_process_loop(self, request, to_handle: str, send_meta: dict[str, Any]) -> None:
+        process = getattr(self, '_process', None) or getattr(self, 'process', None)
+        if process is None:
+            raise RuntimeError('No process handler configured for WeComChannel')
+
+        last_response = None
+        stream_states: dict[str, dict[str, Any]] = {}
+        try:
+            async for event in process(request):
+                obj = getattr(event, 'object', None)
+                if obj == 'content':
+                    await self._handle_stream_content_event(to_handle, event, send_meta, stream_states)
+                elif obj == 'message':
+                    await self._handle_stream_message_event(to_handle, event, send_meta, stream_states)
+                elif obj == 'response':
+                    last_response = event
+                    on_event_response = getattr(self, 'on_event_response', None)
+                    if on_event_response is not None:
+                        await on_event_response(request, event)
+
+            get_error = getattr(self, '_get_response_error_message', None)
+            err_msg = get_error(last_response) if callable(get_error) else None
+            if err_msg:
+                await self._handle_consume_error(request, to_handle, f'Error: {err_msg}')
+
+            on_reply_sent = getattr(self, '_on_reply_sent', None) or getattr(self, 'on_reply_sent', None)
+            if on_reply_sent:
+                args_getter = getattr(self, 'get_on_reply_sent_args', None)
+                if callable(args_getter):
+                    args = args_getter(request, to_handle)
+                else:
+                    args = (getattr(request, 'user_id', '') or '', getattr(request, 'session_id', '') or '')
+                on_reply_sent(self.channel, *args)
+        except Exception:
+            logger.exception('wecom channel process loop failed')
+            await self._handle_consume_error(
+                request,
+                to_handle,
+                'An error occurred while processing your request.',
+            )
+
+    async def _handle_stream_content_event(
+        self,
+        to_handle: str,
+        event: Any,
+        send_meta: dict[str, Any],
+        stream_states: dict[str, dict[str, Any]],
+    ) -> None:
+        chunk = self._extract_stream_text_from_content(event, stream_states)
+        if chunk:
+            await self._send_stream_chunk(to_handle, chunk, send_meta, stream_states, event)
+
+    async def _handle_stream_message_event(
+        self,
+        to_handle: str,
+        event: Any,
+        send_meta: dict[str, Any],
+        stream_states: dict[str, dict[str, Any]],
+    ) -> None:
+        chunk = self._extract_stream_text_from_message(event, stream_states)
+        if chunk:
+            await self._send_stream_chunk(to_handle, chunk, send_meta, stream_states, event)
+
+        if str(getattr(event, 'status', '') or '') != 'completed':
+            return
+
+        parts = self._extract_message_parts(event)
+        if not parts:
+            return
+
+        state = self._get_stream_state(event, stream_states)
+        if state.get('started'):
+            parts = [
+                part
+                for part in parts
+                if str(getattr(part, 'type', '') or '') not in ('text', 'refusal')
+            ]
+            if not parts:
+                return
+
+        await self.send_content_parts(to_handle, parts, send_meta)
+
+    def _extract_stream_text_from_content(
+        self,
+        event: Any,
+        stream_states: dict[str, dict[str, Any]],
+    ) -> str:
+        status = str(getattr(event, 'status', '') or '')
+        if status not in ('in_progress', 'completed'):
+            return ''
+
+        content_type = str(getattr(event, 'type', '') or '')
+        if content_type not in ('text', 'refusal'):
+            return ''
+
+        state = self._get_stream_state(event, stream_states)
+        text = self._get_text_like_value(event)
+        if not text:
+            return ''
+
+        if bool(getattr(event, 'delta', False)):
+            state['sent_text'] += text
+            return text
+
+        return self._diff_stream_text(text, state)
+
+    def _extract_stream_text_from_message(
+        self,
+        event: Any,
+        stream_states: dict[str, dict[str, Any]],
+    ) -> str:
+        status = str(getattr(event, 'status', '') or '')
+        if status not in ('in_progress', 'completed'):
+            return ''
+
+        state = self._get_stream_state(event, stream_states)
+        content = list(getattr(event, 'content', None) or [])
+        has_delta = any(bool(getattr(item, 'delta', False)) for item in content)
+
+        if has_delta:
+            delta_text = ''.join(
+                self._get_text_like_value(item)
+                for item in content
+                if bool(getattr(item, 'delta', False))
+            )
+            if delta_text:
+                state['sent_text'] += delta_text
+            return delta_text
+
+        if status == 'completed' and not state.get('started'):
+            return ''
+
+        full_text = ''.join(self._get_text_like_value(item) for item in content)
+        if not full_text:
+            return ''
+        return self._diff_stream_text(full_text, state)
+
+    async def _send_stream_chunk(
+        self,
+        to_handle: str,
+        text: str,
+        send_meta: dict[str, Any],
+        stream_states: dict[str, dict[str, Any]],
+        event: Any,
+    ) -> None:
+        if not text:
+            return
+
+        state = self._get_stream_state(event, stream_states)
+        stream_meta = dict(send_meta or {})
+        prefix = stream_meta.get('bot_prefix') or getattr(self, 'bot_prefix', '') or ''
+        chunk = text
+        if prefix and not state.get('prefix_sent'):
+            chunk = prefix + chunk
+            state['prefix_sent'] = True
+
+        if stream_meta.get('template_card') and not state.get('template_card_sent'):
+            stream_meta['msgtype'] = 'stream_with_template_card'
+            state['template_card_sent'] = True
+        else:
+            stream_meta['msgtype'] = 'stream'
+
+        logger.debug(
+            'wecom stream chunk send: msgtype=%s chunk_len=%s preview=%s',
+            stream_meta.get('msgtype'),
+            len(chunk),
+            chunk[:120],
+        )
+        await self.send(to_handle, chunk, stream_meta)
+        state['started'] = True
+
+    def _extract_message_parts(self, event: Any) -> list[Any]:
+        to_parts = getattr(self, '_message_to_content_parts', None)
+        if callable(to_parts):
+            return list(to_parts(event) or [])
+        return list(getattr(event, 'content', None) or [])
+
+    def _get_stream_state(
+        self,
+        event: Any,
+        stream_states: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        key = str(getattr(event, 'msg_id', None) or getattr(event, 'id', None) or '__default__')
+        return stream_states.setdefault(
+            key,
+            {
+                'sent_text': '',
+                'started': False,
+                'prefix_sent': False,
+                'template_card_sent': False,
+            },
+        )
+
+    @staticmethod
+    def _get_text_like_value(item: Any) -> str:
+        item_type = str(getattr(item, 'type', '') or '')
+        if item_type == 'text':
+            return str(getattr(item, 'text', '') or '')
+        if item_type == 'refusal':
+            return str(getattr(item, 'refusal', '') or '')
+        return ''
+
+    @staticmethod
+    def _diff_stream_text(full_text: str, state: dict[str, Any]) -> str:
+        previous = str(state.get('sent_text', '') or '')
+        if full_text.startswith(previous):
+            delta = full_text[len(previous):]
+            state['sent_text'] = full_text
+            return delta
+        if not state.get('started'):
+            state['sent_text'] = full_text
+            return full_text
+        state['sent_text'] = full_text
+        return ''
+
+    async def _handle_consume_error(self, request: Any, to_handle: str, err_text: str) -> None:
+        on_consume_error = getattr(self, '_on_consume_error', None)
+        if on_consume_error is None:
+            raise RuntimeError(err_text)
+        await on_consume_error(request, to_handle, err_text)
+
     async def send(self, to_handle, text, meta=None):
         meta = dict(meta or {})
         message = self._build_outbound_message(text, meta)
@@ -353,4 +577,6 @@ class WeComChannel(BaseChannel):
 
     def _get_transport_factory(self):
         return resolve_transport_factory(self.config)
+
+
 

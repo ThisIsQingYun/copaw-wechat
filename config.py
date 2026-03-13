@@ -45,7 +45,7 @@ class WeComConfig:
     transport_factory: Any = None
     websocket_url: str = 'wss://openws.work.weixin.qq.com'
     auto_reconnect: bool = True
-    auto_receive_background: bool = False
+    auto_receive_background: bool = True
     token: str = ''
     encoding_aes_key: str = ''
     receive_id: str = ''
@@ -79,7 +79,7 @@ class WeComConfig:
             transport_factory=data.get('transport_factory'),
             websocket_url=str(data.get('websocket_url', 'wss://openws.work.weixin.qq.com')),
             auto_reconnect=bool(data.get('auto_reconnect', True)),
-            auto_receive_background=bool(data.get('auto_receive_background', False)),
+            auto_receive_background=bool(data.get('auto_receive_background', True)),
             token=str(data.get('token', '')),
             encoding_aes_key=str(data.get('encoding_aes_key', '')),
             receive_id=str(data.get('receive_id', '')),
@@ -87,3 +87,4 @@ class WeComConfig:
             response_post_func=data.get('response_post_func'),
             media_fetch_func=data.get('media_fetch_func'),
         )
+
