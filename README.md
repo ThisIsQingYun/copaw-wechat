@@ -50,24 +50,24 @@ pip install -r requirements.txt
       "bot_prefix": "",
       "filter_tool_messages": false,
       "filter_thinking": false,
+      "bot_id": "",
+      "secret": "",
+      "token": "",
+      "encoding_aes_key": "",
+      "receive_id": "",
+      "channel_name": "wecom",
       "dm_policy": "open",
       "group_policy": "open",
       "allow_from": [],
       "deny_message": "",
       "require_mention": false,
-      "bot_id": "",
-      "secret": "",
-      "channel_name": "wecom",
       "media_dir": "~/.copaw/media/wecom",
       "websocket_url": "wss://openws.work.weixin.qq.com",
+      "response_timeout_seconds": 10,
       "ping_interval_seconds": 20,
       "reconnect_delay_seconds": 5,
       "auto_reconnect": true,
-      "auto_receive_background": true,
-      "token": "",
-      "encoding_aes_key": "",
-      "receive_id": "",
-      "response_timeout_seconds": 10
+      "auto_receive_background": true
     }
   }
 }
@@ -84,6 +84,7 @@ pip install -r requirements.txt
 说明：
 
 - 如果你只使用长连接模式，`token`、`encoding_aes_key`、`receive_id` 可以先留空。
+- 建议按上面的顺序把字段写进 `config.json`；CoPaw Web 对自定义渠道通常会沿用现有 key 的顺序展示参数，这样 `enabled`、`bot_prefix`、`filter_tool_messages`、`filter_thinking` 会置顶，企微必填项会紧随其后。
 - `media_dir` 用于保存接收到的图片和文件。
 - Web 控制台不会自动生成自定义渠道专用表单，建议先把上面的字段预写进 `config.json`，再到 Web 里编辑。
 - `dm_policy` 和 `group_policy` 的标准值与内置渠道一致：`open`、`allowlist`。
@@ -185,3 +186,4 @@ git push -u origin main
 ```bash
 echo "# copaw-wechat" >> README.md
 ```
+
