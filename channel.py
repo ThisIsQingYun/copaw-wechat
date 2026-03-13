@@ -26,7 +26,7 @@ from wecom.webhook import WeComWebhookHandler
 from wecom.ws.client import WeComWebSocketClient
 from wecom.ws.transport import resolve_transport_factory
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('copaw.app.channels.wecom.channel')
 
 
 try:
@@ -344,6 +344,7 @@ class WeComChannel(BaseChannel):
 
         last_response = None
         stream_states: dict[str, dict[str, Any]] = {}
+        delivery_state = {'sent': False}
         try:
             async for event in process(request):
                 obj = getattr(event, 'object', None)
@@ -354,9 +355,21 @@ class WeComChannel(BaseChannel):
                     getattr(event, 'type', ''),
                 )
                 if obj == 'content':
-                    await self._handle_stream_content_event(to_handle, event, send_meta, stream_states)
+                    await self._handle_stream_content_event(
+                        to_handle,
+                        event,
+                        send_meta,
+                        stream_states,
+                        delivery_state,
+                    )
                 elif obj == 'message':
-                    await self._handle_stream_message_event(to_handle, event, send_meta, stream_states)
+                    await self._handle_stream_message_event(
+                        to_handle,
+                        event,
+                        send_meta,
+                        stream_states,
+                        delivery_state,
+                    )
                 elif obj == 'response':
                     last_response = event
                     on_event_response = getattr(self, 'on_event_response', None)
@@ -367,6 +380,13 @@ class WeComChannel(BaseChannel):
             err_msg = get_error(last_response) if callable(get_error) else None
             if err_msg:
                 await self._handle_consume_error(request, to_handle, f'Error: {err_msg}')
+            else:
+                await self._send_final_response_output_if_needed(
+                    last_response,
+                    to_handle,
+                    send_meta,
+                    delivery_state,
+                )
 
             on_reply_sent = getattr(self, '_on_reply_sent', None) or getattr(self, 'on_reply_sent', None)
             if on_reply_sent:
@@ -390,10 +410,18 @@ class WeComChannel(BaseChannel):
         event: Any,
         send_meta: dict[str, Any],
         stream_states: dict[str, dict[str, Any]],
+        delivery_state: dict[str, bool],
     ) -> None:
         chunk = self._extract_stream_text_from_content(event, stream_states)
         if chunk:
-            await self._send_stream_chunk(to_handle, chunk, send_meta, stream_states, event)
+            await self._send_stream_chunk(
+                to_handle,
+                chunk,
+                send_meta,
+                stream_states,
+                delivery_state,
+                event,
+            )
 
     async def _handle_stream_message_event(
         self,
@@ -401,10 +429,18 @@ class WeComChannel(BaseChannel):
         event: Any,
         send_meta: dict[str, Any],
         stream_states: dict[str, dict[str, Any]],
+        delivery_state: dict[str, bool],
     ) -> None:
         chunk = self._extract_stream_text_from_message(event, stream_states)
         if chunk:
-            await self._send_stream_chunk(to_handle, chunk, send_meta, stream_states, event)
+            await self._send_stream_chunk(
+                to_handle,
+                chunk,
+                send_meta,
+                stream_states,
+                delivery_state,
+                event,
+            )
 
         if str(getattr(event, 'status', '') or '') != 'completed':
             return
@@ -424,6 +460,7 @@ class WeComChannel(BaseChannel):
                 return
 
         await self.send_content_parts(to_handle, parts, send_meta)
+        delivery_state['sent'] = True
 
     def _extract_stream_text_from_content(
         self,
@@ -486,6 +523,7 @@ class WeComChannel(BaseChannel):
         text: str,
         send_meta: dict[str, Any],
         stream_states: dict[str, dict[str, Any]],
+        delivery_state: dict[str, bool],
         event: Any,
     ) -> None:
         if not text:
@@ -513,6 +551,7 @@ class WeComChannel(BaseChannel):
         )
         await self.send(to_handle, chunk, stream_meta)
         state['started'] = True
+        delivery_state['sent'] = True
 
     def _extract_message_parts(self, event: Any) -> list[Any]:
         to_parts = getattr(self, '_message_to_content_parts', None)
@@ -558,12 +597,36 @@ class WeComChannel(BaseChannel):
         state['sent_text'] = full_text
         return ''
 
+    async def _send_final_response_output_if_needed(
+        self,
+        last_response: Any,
+        to_handle: str,
+        send_meta: dict[str, Any],
+        delivery_state: dict[str, bool],
+    ) -> None:
+        if delivery_state.get('sent'):
+            return
+        if not last_response:
+            return
+
+        output = list(getattr(last_response, 'output', None) or [])
+        if not output:
+            return
+
+        final_message = output[-1]
+        parts = self._extract_message_parts(final_message)
+        if not parts:
+            return
+
+        logger.info('wecom final response fallback send: parts_count=%s', len(parts))
+        await self.send_content_parts(to_handle, parts, send_meta)
+        delivery_state['sent'] = True
+
     async def _handle_consume_error(self, request: Any, to_handle: str, err_text: str) -> None:
         on_consume_error = getattr(self, '_on_consume_error', None)
         if on_consume_error is None:
             raise RuntimeError(err_text)
         await on_consume_error(request, to_handle, err_text)
-
     async def send(self, to_handle, text, meta=None):
         meta = dict(meta or {})
         message = self._build_outbound_message(text, meta)
@@ -577,36 +640,55 @@ class WeComChannel(BaseChannel):
             bool(response_url),
             len(text or ''),
         )
-        if response_url:
-            if message.msgtype == 'template_card':
-                return await self._response_client.send_template_card(str(response_url), message.payload['template_card'])
-            if message.msgtype == 'markdown':
-                feedback = ((message.payload.get('markdown') or {}).get('feedback') or {}).get('id')
-                return await self._response_client.send_markdown(str(response_url), message.payload['markdown']['content'], feedback_id=feedback)
-            return await self._response_client.send_message(str(response_url), message)
 
         if message.mode in (DeliveryMode.RESPOND, DeliveryMode.WELCOME, DeliveryMode.UPDATE):
             command = self.service.build_command(req_id=str(meta['req_id']), message=message)
-        else:
-            chat_type = ChatType.from_value(str(meta.get('chat_type', 'single')))
-            req_id = str(meta.get('send_req_id') or f'send-{to_handle}')
-            command = self.service.build_command(
-                req_id=req_id,
-                chat_id=str(to_handle),
-                chat_type=chat_type,
-                message=message,
-            )
-
-        if self._ws_client is not None:
-            await self._ws_client.send_command(command)
-            return command
-
-        if not response_url:
+            if self._ws_client is not None:
+                logger.info(
+                    'wecom outbound command sent via websocket: cmd=%s req_id=%s',
+                    command.get('cmd'),
+                    (command.get('headers') or {}).get('req_id', ''),
+                )
+                await self._ws_client.send_command(command)
+                return command
+            if response_url:
+                logger.info('wecom outbound reply falling back to response_url: req_id=%s', str(meta.get('req_id', '')))
+                if message.msgtype == 'template_card':
+                    return await self._response_client.send_template_card(str(response_url), message.payload['template_card'])
+                if message.msgtype == 'markdown':
+                    feedback = ((message.payload.get('markdown') or {}).get('feedback') or {}).get('id')
+                    return await self._response_client.send_markdown(str(response_url), message.payload['markdown']['content'], feedback_id=feedback)
+                return await self._response_client.send_message(str(response_url), message)
             logger.warning(
                 'wecom outbound command not sent: websocket client is not connected and response_url is missing (cmd=%s req_id=%s)',
                 command.get('cmd'),
                 (command.get('headers') or {}).get('req_id', ''),
             )
+            return command
+
+        chat_type = ChatType.from_value(str(meta.get('chat_type', 'single')))
+        req_id = str(meta.get('send_req_id') or f'send-{to_handle}')
+        command = self.service.build_command(
+            req_id=req_id,
+            chat_id=str(to_handle),
+            chat_type=chat_type,
+            message=message,
+        )
+
+        if self._ws_client is not None:
+            logger.info(
+                'wecom outbound proactive command sent via websocket: cmd=%s req_id=%s',
+                command.get('cmd'),
+                (command.get('headers') or {}).get('req_id', ''),
+            )
+            await self._ws_client.send_command(command)
+            return command
+
+        logger.warning(
+            'wecom outbound command not sent: websocket client is not connected and response_url is missing (cmd=%s req_id=%s)',
+            command.get('cmd'),
+            (command.get('headers') or {}).get('req_id', ''),
+        )
         return command
 
     def _build_template_card(self, meta: dict[str, Any], *, fallback_feedback_key: str = 'template_card_feedback_id') -> dict[str, Any]:
@@ -628,6 +710,9 @@ class WeComChannel(BaseChannel):
 
     def _get_transport_factory(self):
         return resolve_transport_factory(self.config)
+
+
+
 
 
 

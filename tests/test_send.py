@@ -18,3 +18,85 @@ def test_send_warns_when_no_delivery_path(caplog):
         assert any('wecom outbound command not sent' in message for message in messages)
 
     asyncio.run(run_case())
+
+
+def test_send_uses_response_url_when_websocket_is_missing():
+    async def run_case():
+        post_calls = []
+
+        async def fake_post(response_url, payload, timeout_seconds):
+            post_calls.append((response_url, payload, timeout_seconds))
+            return {'errcode': 0}
+
+        config = WeComConfig.from_mapping(
+            {
+                'bot_id': 'bot_123',
+                'secret': 'secret_456',
+                'response_post_func': fake_post,
+            }
+        )
+        channel = WeComChannel(process=None, config=config)
+
+        response = await channel.send(
+            'chat_1',
+            'hello',
+            {
+                'req_id': 'req_1',
+                'response_url': 'https://example.com/response',
+            },
+        )
+
+        assert response == {'errcode': 0}
+        assert post_calls == [
+            (
+                'https://example.com/response',
+                {
+                    'msgtype': 'markdown',
+                    'markdown': {'content': 'hello'},
+                },
+                10,
+            )
+        ]
+
+    asyncio.run(run_case())
+
+
+def test_send_prefers_websocket_for_reply_mode_before_response_url():
+    class FakeWsClient:
+        def __init__(self):
+            self.commands = []
+
+        async def send_command(self, command):
+            self.commands.append(command)
+
+    async def run_case():
+        post_calls = []
+
+        async def fake_post(response_url, payload, timeout_seconds):
+            post_calls.append((response_url, payload, timeout_seconds))
+            return {'errcode': 0}
+
+        config = WeComConfig.from_mapping(
+            {
+                'bot_id': 'bot_123',
+                'secret': 'secret_456',
+                'response_post_func': fake_post,
+            }
+        )
+        channel = WeComChannel(process=None, config=config)
+        channel._ws_client = FakeWsClient()
+
+        command = await channel.send(
+            'chat_1',
+            'hello',
+            {
+                'req_id': 'req_1',
+                'response_url': 'https://example.com/response',
+            },
+        )
+
+        assert command['cmd'] == 'aibot_respond_msg'
+        assert channel._ws_client.commands[0]['cmd'] == 'aibot_respond_msg'
+        assert post_calls == []
+
+    asyncio.run(run_case())

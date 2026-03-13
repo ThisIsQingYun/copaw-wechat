@@ -48,6 +48,14 @@ class FakeResponseEvent:
         self.error = None
 
 
+class FakeResponseOnlyEvent:
+    def __init__(self, *, text: str):
+        self.object = 'response'
+        self.status = 'completed'
+        self.error = None
+        self.output = [SimpleNamespace(type='message', content=[FakeTextPart(text)])]
+
+
 async def _run_loop(events):
     async def process(_request):
         for event in events:
@@ -142,5 +150,18 @@ def test_run_process_loop_logs_event_summaries(caplog):
         messages = [record.getMessage() for record in caplog.records]
         assert any('wecom process event: object=message status=in_progress type=message' in message for message in messages)
         assert any('wecom process event: object=response status=completed type=' in message for message in messages)
+
+    asyncio.run(run_case())
+
+
+def test_run_process_loop_falls_back_to_final_response_output_when_no_message_events():
+    async def run_case():
+        events = [FakeResponseOnlyEvent(text='final answer')]
+        sent_messages, sent_parts, _ = await _run_loop(events)
+
+        assert sent_messages == []
+        assert len(sent_parts) == 1
+        assert len(sent_parts[0]['parts']) == 1
+        assert sent_parts[0]['parts'][0].text == 'final answer'
 
     asyncio.run(run_case())

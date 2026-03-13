@@ -9,7 +9,7 @@ from uuid import uuid4
 from wecom.config import WeComConfig
 from wecom.models import InboundEnvelope
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger('copaw.app.channels.wecom.ws.client')
 
 
 class WeComWebSocketClient:
@@ -150,4 +150,5 @@ class WeComWebSocketClient:
     @staticmethod
     def _new_req_id(prefix: str) -> str:
         return f'{prefix}-{uuid4().hex}'
+
 
