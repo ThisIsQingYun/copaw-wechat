@@ -1,0 +1,3 @@
+﻿aiohttp>=3.9
+cryptography>=42
+httpx>=0.27

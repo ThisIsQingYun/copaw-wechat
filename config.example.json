@@ -1,0 +1,28 @@
+﻿{
+  "channels": {
+    "wecom": {
+      "enabled": true,
+      "bot_prefix": "",
+      "filter_tool_messages": false,
+      "filter_thinking": false,
+      "dm_policy": "open",
+      "group_policy": "open",
+      "allow_from": [],
+      "deny_message": "",
+      "require_mention": false,
+      "bot_id": "",
+      "secret": "",
+      "channel_name": "wecom",
+      "media_dir": "~/.copaw/media/wecom",
+      "websocket_url": "wss://openws.work.weixin.qq.com",
+      "ping_interval_seconds": 20,
+      "reconnect_delay_seconds": 5,
+      "auto_reconnect": true,
+      "auto_receive_background": true,
+      "token": "",
+      "encoding_aes_key": "",
+      "receive_id": "",
+      "response_timeout_seconds": 10
+    }
+  }
+}
