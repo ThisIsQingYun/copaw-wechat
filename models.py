@@ -38,6 +38,19 @@ class InboundEnvelope:
             body=dict(body),
         )
 
+    def is_heartbeat(self) -> bool:
+        cmd = self.cmd.strip().lower()
+        if cmd in ('ping', 'pong'):
+            return True
+        if not self.req_id.startswith('ping-'):
+            return False
+        if not self.body:
+            return True
+        return not any(
+            self.body.get(key)
+            for key in ('msgtype', 'event', 'msgid', 'chatid', 'response_url')
+        )
+
 
 @dataclass(slots=True)
 class ParsedMessage:

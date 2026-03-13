@@ -52,7 +52,10 @@ class WeComWebSocketClient:
     async def receive_one(self) -> InboundEnvelope:
         payload = await self._require_transport().recv_json()
         envelope = InboundEnvelope.from_dict(payload)
-        logger.info('wecom websocket frame received: cmd=%s req_id=%s', envelope.cmd, envelope.req_id)
+        if envelope.is_heartbeat():
+            logger.debug('wecom websocket heartbeat received: req_id=%s', envelope.req_id)
+        else:
+            logger.info('wecom websocket frame received: cmd=%s req_id=%s', envelope.cmd, envelope.req_id)
         return envelope
 
     async def dispatch_once(self, on_envelope) -> InboundEnvelope:
@@ -150,5 +153,7 @@ class WeComWebSocketClient:
     @staticmethod
     def _new_req_id(prefix: str) -> str:
         return f'{prefix}-{uuid4().hex}'
+
+
 
 

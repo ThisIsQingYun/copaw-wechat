@@ -241,6 +241,10 @@ class WeComChannel(BaseChannel):
         await self._ws_client.run_forever(self._handle_envelope)
 
     async def _handle_envelope(self, envelope: InboundEnvelope):
+        if envelope.is_heartbeat():
+            logger.debug('wecom heartbeat received: req_id=%s', envelope.req_id)
+            return None
+
         body = envelope.body or {}
         event = body.get('event') or {}
         logger.info(
@@ -737,6 +741,7 @@ class WeComChannel(BaseChannel):
 
     def _get_transport_factory(self):
         return resolve_transport_factory(self.config)
+
 
 
 
