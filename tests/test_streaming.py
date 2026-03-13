@@ -1,4 +1,5 @@
 ﻿import asyncio
+import logging
 from types import SimpleNamespace
 
 from wecom.channel import WeComChannel
@@ -126,5 +127,20 @@ def test_run_process_loop_stream_completion_keeps_non_text_parts_only():
         assert len(sent_parts[0]['parts']) == 1
         assert sent_parts[0]['parts'][0].type == 'file'
         assert sent_parts[0]['parts'][0].file_url == 'https://example.com/result.txt'
+
+    asyncio.run(run_case())
+
+
+def test_run_process_loop_logs_event_summaries(caplog):
+    async def run_case():
+        events = [
+            FakeMessageEvent(status='in_progress', message_id='msg_3', content=[FakeTextPart('hello')]),
+            FakeResponseEvent(),
+        ]
+        with caplog.at_level(logging.INFO):
+            await _run_loop(events)
+        messages = [record.getMessage() for record in caplog.records]
+        assert any('wecom process event: object=message status=in_progress type=message' in message for message in messages)
+        assert any('wecom process event: object=response status=completed type=' in message for message in messages)
 
     asyncio.run(run_case())

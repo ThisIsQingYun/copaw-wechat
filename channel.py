@@ -347,6 +347,12 @@ class WeComChannel(BaseChannel):
         try:
             async for event in process(request):
                 obj = getattr(event, 'object', None)
+                logger.info(
+                    'wecom process event: object=%s status=%s type=%s',
+                    obj,
+                    getattr(event, 'status', None),
+                    getattr(event, 'type', ''),
+                )
                 if obj == 'content':
                     await self._handle_stream_content_event(to_handle, event, send_meta, stream_states)
                 elif obj == 'message':
@@ -593,6 +599,14 @@ class WeComChannel(BaseChannel):
 
         if self._ws_client is not None:
             await self._ws_client.send_command(command)
+            return command
+
+        if not response_url:
+            logger.warning(
+                'wecom outbound command not sent: websocket client is not connected and response_url is missing (cmd=%s req_id=%s)',
+                command.get('cmd'),
+                (command.get('headers') or {}).get('req_id', ''),
+            )
         return command
 
     def _build_template_card(self, meta: dict[str, Any], *, fallback_feedback_key: str = 'template_card_feedback_id') -> dict[str, Any]:
@@ -614,6 +628,7 @@ class WeComChannel(BaseChannel):
 
     def _get_transport_factory(self):
         return resolve_transport_factory(self.config)
+
 
 
 
