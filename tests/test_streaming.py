@@ -56,6 +56,14 @@ class FakeResponseOnlyEvent:
         self.output = [SimpleNamespace(type='message', content=[FakeTextPart(text)])]
 
 
+class FakeDictResponseOnlyEvent:
+    def __init__(self, *, text: str):
+        self.object = 'response'
+        self.status = 'completed'
+        self.error = None
+        self.output = [{'type': 'message', 'content': [{'type': 'text', 'text': text}]}]
+
+
 async def _run_loop(events, *, config_data=None, send_meta=None):
     async def process(_request):
         for event in events:
@@ -217,6 +225,21 @@ def test_run_process_loop_uses_final_response_output_to_close_stream_and_flush_t
         events = [
             FakeContentEvent(status='in_progress', message_id='msg_6', text='hello wor'),
             FakeResponseOnlyEvent(text='hello world'),
+        ]
+        sent_messages, sent_parts, _ = await _run_loop(events)
+
+        assert [item['text'] for item in sent_messages] == ['hello wor', 'hello world']
+        assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, True]
+        assert sent_parts == []
+
+    asyncio.run(run_case())
+
+
+def test_run_process_loop_reads_dict_shaped_final_response_output_for_stream_finish():
+    async def run_case():
+        events = [
+            FakeContentEvent(status='in_progress', message_id='msg_7', text='hello wor'),
+            FakeDictResponseOnlyEvent(text='hello world'),
         ]
         sent_messages, sent_parts, _ = await _run_loop(events)
 

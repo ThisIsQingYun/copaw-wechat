@@ -623,6 +623,8 @@ class WeComChannel(BaseChannel):
         return generated_id
 
     def _extract_message_parts(self, event: Any) -> list[Any]:
+        if isinstance(event, dict):
+            return list(event.get('content') or [])
         to_parts = getattr(self, '_message_to_content_parts', None)
         if callable(to_parts):
             return list(to_parts(event) or [])
@@ -648,12 +650,18 @@ class WeComChannel(BaseChannel):
         )
 
     @staticmethod
-    def _get_text_like_value(item: Any) -> str:
-        item_type = str(getattr(item, 'type', '') or '')
+    def _read_item_field(item: Any, field: str, default: Any = None) -> Any:
+        if isinstance(item, dict):
+            return item.get(field, default)
+        return getattr(item, field, default)
+
+    @classmethod
+    def _get_text_like_value(cls, item: Any) -> str:
+        item_type = str(cls._read_item_field(item, 'type', '') or '')
         if item_type == 'text':
-            return str(getattr(item, 'text', '') or '')
+            return str(cls._read_item_field(item, 'text', '') or '')
         if item_type == 'refusal':
-            return str(getattr(item, 'refusal', '') or '')
+            return str(cls._read_item_field(item, 'refusal', '') or '')
         return ''
 
 
@@ -713,7 +721,7 @@ class WeComChannel(BaseChannel):
         text_parts = []
         non_text_parts = []
         for part in parts:
-            part_type = str(getattr(part, 'type', '') or '')
+            part_type = str(self._read_item_field(part, 'type', '') or '')
             if part_type in ('text', 'refusal'):
                 text_parts.append(part)
             else:
