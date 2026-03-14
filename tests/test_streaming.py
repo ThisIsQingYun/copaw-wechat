@@ -210,3 +210,18 @@ def test_run_process_loop_falls_back_to_final_response_output_when_no_message_ev
         assert sent_parts[0]['parts'][0].text == 'final answer'
 
     asyncio.run(run_case())
+
+
+def test_run_process_loop_uses_final_response_output_to_close_stream_and_flush_tail_text():
+    async def run_case():
+        events = [
+            FakeContentEvent(status='in_progress', message_id='msg_6', text='hello wor'),
+            FakeResponseOnlyEvent(text='hello world'),
+        ]
+        sent_messages, sent_parts, _ = await _run_loop(events)
+
+        assert [item['text'] for item in sent_messages] == ['hello wor', 'hello world']
+        assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, True]
+        assert sent_parts == []
+
+    asyncio.run(run_case())

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from os import getenv
+from types import SimpleNamespace
 from typing import Any
 
 from wecom.constants import (
@@ -390,6 +391,7 @@ class WeComChannel(BaseChannel):
                     to_handle,
                     send_meta,
                     delivery_state,
+                    stream_states,
                 )
 
             on_reply_sent = getattr(self, '_on_reply_sent', None) or getattr(self, 'on_reply_sent', None)
@@ -661,9 +663,8 @@ class WeComChannel(BaseChannel):
         to_handle: str,
         send_meta: dict[str, Any],
         delivery_state: dict[str, bool],
+        stream_states: dict[str, dict[str, Any]],
     ) -> None:
-        if delivery_state.get('sent'):
-            return
         if not last_response:
             return
 
@@ -676,9 +677,70 @@ class WeComChannel(BaseChannel):
         if not parts:
             return
 
+        if await self._finalize_stream_from_response_output(
+            final_message,
+            to_handle,
+            send_meta,
+            delivery_state,
+            stream_states,
+        ):
+            return
+
+        if delivery_state.get('sent'):
+            return
+
         logger.info('wecom final response fallback send: parts_count=%s', len(parts))
         await self.send_content_parts(to_handle, parts, send_meta)
         delivery_state['sent'] = True
+
+    async def _finalize_stream_from_response_output(
+        self,
+        final_message: Any,
+        to_handle: str,
+        send_meta: dict[str, Any],
+        delivery_state: dict[str, bool],
+        stream_states: dict[str, dict[str, Any]],
+    ) -> bool:
+        started_state_keys = [
+            state['state_key']
+            for state in stream_states.values()
+            if state.get('started')
+        ]
+        if not started_state_keys:
+            return False
+
+        parts = self._extract_message_parts(final_message)
+        text_parts = []
+        non_text_parts = []
+        for part in parts:
+            part_type = str(getattr(part, 'type', '') or '')
+            if part_type in ('text', 'refusal'):
+                text_parts.append(part)
+            else:
+                non_text_parts.append(part)
+
+        final_text = ''.join(self._get_text_like_value(part) for part in text_parts)
+        if not final_text and not non_text_parts:
+            return False
+
+        if final_text:
+            for state_key in started_state_keys:
+                state = stream_states.get(state_key) or {}
+                state['current_text'] = final_text
+                await self._send_stream_snapshot(
+                    to_handle,
+                    send_meta,
+                    stream_states,
+                    delivery_state,
+                    SimpleNamespace(id=state_key),
+                    finish=True,
+                )
+
+        if non_text_parts:
+            await self.send_content_parts(to_handle, non_text_parts, send_meta)
+            delivery_state['sent'] = True
+
+        return bool(final_text or non_text_parts)
 
     async def _handle_consume_error(self, request: Any, to_handle: str, err_text: str) -> None:
         on_consume_error = getattr(self, '_on_consume_error', None)
