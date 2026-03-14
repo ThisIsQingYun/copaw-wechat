@@ -86,7 +86,7 @@ class WeComWebSocketClient:
         else:
             body = envelope.body or {}
             body_keys = ','.join(sorted(str(key) for key in body.keys())) or '-'
-            logger.info(
+            logger.debug(
                 'wecom websocket frame received: cmd=%s req_id=%s body_keys=%s errcode=%s errmsg=%s',
                 envelope.cmd,
                 envelope.req_id,
@@ -209,7 +209,7 @@ class WeComWebSocketClient:
             future.set_result(envelope)
         body = envelope.body or {}
         body_keys = ','.join(sorted(str(key) for key in body.keys())) or '-'
-        logger.info(
+        logger.debug(
             'wecom websocket ack received: cmd=%s req_id=%s body_keys=%s errcode=%s errmsg=%s',
             envelope.cmd,
             req_id,

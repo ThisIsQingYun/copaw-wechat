@@ -359,7 +359,7 @@ class WeComChannel(BaseChannel):
         try:
             async for event in process(request):
                 obj = getattr(event, 'object', None)
-                logger.info(
+                logger.debug(
                     'wecom process event: object=%s status=%s type=%s',
                     obj,
                     getattr(event, 'status', None),
@@ -470,7 +470,7 @@ class WeComChannel(BaseChannel):
                 stream_states,
             )
             if stream_target_state is not state:
-                logger.info(
+                logger.debug(
                     'wecom stream completion handoff: source_state=%s target_state=%s target_len=%s',
                     state.get('state_key', ''),
                     stream_target_state.get('state_key', ''),
@@ -609,7 +609,7 @@ class WeComChannel(BaseChannel):
         else:
             stream_meta['msgtype'] = 'stream'
 
-        logger.info(
+        logger.debug(
             'wecom stream snapshot send: source=%s status=%s state_key=%s msgtype=%s stream_id=%s finish=%s content_len=%s preview=%s',
             getattr(event, 'object', 'state'),
             getattr(event, 'status', ''),
@@ -710,7 +710,7 @@ class WeComChannel(BaseChannel):
         changed: bool,
     ) -> None:
         current_text = str(state.get('current_text', '') or '')
-        logger.info(
+        logger.debug(
             'wecom stream state update: source=%s status=%s state_key=%s changed=%s started=%s current_len=%s delta=%s preview=%s',
             source,
             getattr(event, 'status', ''),
@@ -861,7 +861,7 @@ class WeComChannel(BaseChannel):
         if not started_state_keys:
             return False
 
-        logger.info('wecom response completion closing open streams: state_keys=%s', started_state_keys)
+        logger.debug('wecom response completion closing open streams: state_keys=%s', started_state_keys)
         for state_key in started_state_keys:
             await self._send_stream_snapshot(
                 to_handle,
@@ -932,7 +932,8 @@ class WeComChannel(BaseChannel):
         message = self._build_outbound_message(text, meta)
 
         response_url = meta.get('response_url')
-        logger.info(
+        send_log = logger.debug if message.msgtype in ('stream', 'stream_with_template_card') else logger.info
+        send_log(
             'wecom outbound send: msgtype=%s mode=%s to_handle=%s has_response_url=%s text_len=%s',
             message.msgtype,
             getattr(message.mode, 'value', message.mode),
@@ -942,7 +943,7 @@ class WeComChannel(BaseChannel):
         )
         if message.msgtype in ('stream', 'stream_with_template_card'):
             stream_payload = dict(message.payload.get('stream') or {})
-            logger.info(
+            logger.debug(
                 'wecom outbound stream payload: stream_id=%s finish=%s content_len=%s preview=%s',
                 stream_payload.get('id', ''),
                 bool(stream_payload.get('finish')),
@@ -953,7 +954,8 @@ class WeComChannel(BaseChannel):
         if message.mode in (DeliveryMode.RESPOND, DeliveryMode.WELCOME, DeliveryMode.UPDATE):
             command = self.service.build_command(req_id=str(meta['req_id']), message=message)
             if self._ws_client is not None:
-                logger.info(
+                command_log = logger.debug if message.msgtype in ('stream', 'stream_with_template_card') else logger.info
+                command_log(
                     'wecom outbound command sent via websocket: cmd=%s req_id=%s',
                     command.get('cmd'),
                     (command.get('headers') or {}).get('req_id', ''),

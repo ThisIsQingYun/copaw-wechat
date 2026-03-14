@@ -201,8 +201,8 @@ def test_run_process_loop_logs_event_summaries(caplog):
         with caplog.at_level(logging.INFO):
             await _run_loop(events)
         messages = [record.getMessage() for record in caplog.records]
-        assert any('wecom process event: object=message status=in_progress type=message' in message for message in messages)
-        assert any('wecom process event: object=response status=completed type=' in message for message in messages)
+        assert not any('wecom process event:' in message for message in messages)
+        assert any('wecom response completion state:' in message for message in messages)
 
     asyncio.run(run_case())
 
@@ -214,7 +214,7 @@ def test_run_process_loop_emits_detailed_stream_diagnostics(caplog):
             FakeContentEvent(status='completed', message_id='msg_diag', text='world'),
             FakeResponseEvent(),
         ]
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             await _run_loop(events)
         messages = [record.getMessage() for record in caplog.records]
         assert any('wecom stream state update: source=content' in message for message in messages)
