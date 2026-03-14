@@ -207,6 +207,23 @@ def test_run_process_loop_logs_event_summaries(caplog):
     asyncio.run(run_case())
 
 
+def test_run_process_loop_emits_detailed_stream_diagnostics(caplog):
+    async def run_case():
+        events = [
+            FakeContentEvent(status='in_progress', message_id='msg_diag', text='hello '),
+            FakeContentEvent(status='completed', message_id='msg_diag', text='world'),
+            FakeResponseEvent(),
+        ]
+        with caplog.at_level(logging.INFO):
+            await _run_loop(events)
+        messages = [record.getMessage() for record in caplog.records]
+        assert any('wecom stream state update: source=content' in message for message in messages)
+        assert any('wecom stream snapshot send:' in message for message in messages)
+        assert any('wecom response completion state:' in message for message in messages)
+
+    asyncio.run(run_case())
+
+
 def test_run_process_loop_falls_back_to_final_response_output_when_no_message_events():
     async def run_case():
         events = [FakeResponseOnlyEvent(text='final answer')]
@@ -245,6 +262,39 @@ def test_run_process_loop_reads_dict_shaped_final_response_output_for_stream_fin
 
         assert [item['text'] for item in sent_messages] == ['hello wor', 'hello world']
         assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, True]
+        assert sent_parts == []
+
+    asyncio.run(run_case())
+
+
+def test_run_process_loop_does_not_finish_stream_early_on_content_completed_before_message_completed():
+    async def run_case():
+        events = [
+            FakeContentEvent(status='in_progress', message_id='delta_1', text='hello wor'),
+            FakeContentEvent(status='completed', message_id='delta_1', text='ld'),
+            FakeMessageEvent(status='completed', message_id='msg_8', content=[FakeTextPart('hello world')]),
+            FakeResponseEvent(),
+        ]
+        sent_messages, sent_parts, _ = await _run_loop(events)
+
+        assert [item['text'] for item in sent_messages] == ['hello wor', 'hello world', 'hello world']
+        assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, False, True]
+        assert sent_parts == []
+
+    asyncio.run(run_case())
+
+
+def test_run_process_loop_closes_open_stream_on_response_completed_without_output():
+    async def run_case():
+        events = [
+            FakeContentEvent(status='in_progress', message_id='msg_9', text='hello wor'),
+            FakeContentEvent(status='completed', message_id='msg_9', text='ld'),
+            FakeResponseEvent(),
+        ]
+        sent_messages, sent_parts, _ = await _run_loop(events)
+
+        assert [item['text'] for item in sent_messages] == ['hello wor', 'hello world', 'hello world']
+        assert [item['meta'].get('stream', {}).get('finish') for item in sent_messages] == [False, False, True]
         assert sent_parts == []
 
     asyncio.run(run_case())

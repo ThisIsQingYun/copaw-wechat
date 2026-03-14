@@ -139,3 +139,26 @@ def test_ws_client_heartbeat_frames_do_not_emit_info_logs(caplog):
         assert not any('wecom websocket frame received' in message for message in messages)
 
     asyncio.run(run_case())
+
+
+def test_ws_client_non_heartbeat_frames_emit_detailed_info_logs(caplog):
+    async def run_case():
+        config = WeComConfig.from_mapping({'bot_id': 'bot_123', 'secret': 'secret_456'})
+        client = WeComWebSocketClient(config=config, transport_factory=lambda: None)
+        client._transport = StaticTransport(
+            {
+                'cmd': 'aibot_respond_msg',
+                'headers': {'req_id': 'req-detailed'},
+                'body': {'errcode': 0, 'errmsg': 'ok', 'msgid': 'msg_1'},
+            }
+        )
+
+        with caplog.at_level(logging.INFO):
+            envelope = await client.receive_one()
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert envelope.is_heartbeat() is False
+        assert any('wecom websocket frame received:' in message and 'body_keys=errcode,errmsg,msgid' in message for message in messages)
+        assert any('errcode=0' in message and 'errmsg=ok' in message for message in messages)
+
+    asyncio.run(run_case())

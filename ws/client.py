@@ -55,7 +55,16 @@ class WeComWebSocketClient:
         if envelope.is_heartbeat():
             logger.debug('wecom websocket heartbeat received: req_id=%s', envelope.req_id)
         else:
-            logger.info('wecom websocket frame received: cmd=%s req_id=%s', envelope.cmd, envelope.req_id)
+            body = envelope.body or {}
+            body_keys = ','.join(sorted(str(key) for key in body.keys())) or '-'
+            logger.info(
+                'wecom websocket frame received: cmd=%s req_id=%s body_keys=%s errcode=%s errmsg=%s',
+                envelope.cmd,
+                envelope.req_id,
+                body_keys,
+                body.get('errcode', ''),
+                body.get('errmsg', ''),
+            )
         return envelope
 
     async def dispatch_once(self, on_envelope) -> InboundEnvelope:

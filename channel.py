@@ -248,13 +248,19 @@ class WeComChannel(BaseChannel):
 
         body = envelope.body or {}
         event = body.get('event') or {}
+        body_keys = ','.join(sorted(str(key) for key in body.keys())) or '-'
         logger.info(
-            'wecom inbound envelope: cmd=%s req_id=%s msgtype=%s eventtype=%s chatid=%s',
+            'wecom inbound envelope: cmd=%s req_id=%s msgtype=%s eventtype=%s chatid=%s msgid=%s body_keys=%s has_response_url=%s errcode=%s errmsg=%s',
             envelope.cmd,
             envelope.req_id,
             body.get('msgtype', ''),
             event.get('eventtype', ''),
             body.get('chatid', ''),
+            body.get('msgid', ''),
+            body_keys,
+            bool(body.get('response_url')),
+            body.get('errcode', ''),
+            body.get('errmsg', ''),
         )
         payload = self.service.build_enqueue_payload(envelope)
         payload = await self._media_store.persist_payload(payload)
@@ -420,15 +426,16 @@ class WeComChannel(BaseChannel):
     ) -> None:
         state, changed = self._update_stream_state_from_content(event, stream_states)
         status = str(getattr(event, 'status', '') or '')
+        self._log_stream_state_update('content', event, state, changed)
         if status == 'completed':
-            if state.get('started') or changed:
+            if changed:
                 await self._send_stream_snapshot(
                     to_handle,
                     send_meta,
                     stream_states,
                     delivery_state,
                     event,
-                    finish=True,
+                    finish=False,
                 )
             return
         if changed:
@@ -451,17 +458,34 @@ class WeComChannel(BaseChannel):
     ) -> None:
         state, changed = self._update_stream_state_from_message(event, stream_states)
         status = str(getattr(event, 'status', '') or '')
+        stream_target_state = state
+        stream_target_event = event
+        stream_text_sent = False
+        self._log_stream_state_update('message', event, state, changed)
 
         if status == 'completed':
-            if state.get('started'):
+            stream_target_state, stream_target_event = self._resolve_completion_stream_target(
+                event,
+                state,
+                stream_states,
+            )
+            if stream_target_state is not state:
+                logger.info(
+                    'wecom stream completion handoff: source_state=%s target_state=%s target_len=%s',
+                    state.get('state_key', ''),
+                    stream_target_state.get('state_key', ''),
+                    len(str(stream_target_state.get('current_text', '') or '')),
+                )
+            if stream_target_state.get('started') or changed:
                 await self._send_stream_snapshot(
                     to_handle,
                     send_meta,
                     stream_states,
                     delivery_state,
-                    event,
+                    stream_target_event,
                     finish=True,
                 )
+                stream_text_sent = True
         elif changed:
             await self._send_stream_snapshot(
                 to_handle,
@@ -479,11 +503,11 @@ class WeComChannel(BaseChannel):
         if not parts:
             return
 
-        if state.get('started'):
+        if stream_text_sent or stream_target_state.get('started'):
             parts = [
                 part
                 for part in parts
-                if str(getattr(part, 'type', '') or '') not in ('text', 'refusal')
+                if str(self._read_item_field(part, 'type', '') or '') not in ('text', 'refusal')
             ]
             if not parts:
                 return
@@ -585,13 +609,16 @@ class WeComChannel(BaseChannel):
         else:
             stream_meta['msgtype'] = 'stream'
 
-        logger.debug(
-            'wecom stream snapshot send: msgtype=%s stream_id=%s finish=%s content_len=%s preview=%s',
+        logger.info(
+            'wecom stream snapshot send: source=%s status=%s state_key=%s msgtype=%s stream_id=%s finish=%s content_len=%s preview=%s',
+            getattr(event, 'object', 'state'),
+            getattr(event, 'status', ''),
+            state.get('state_key', ''),
             stream_meta.get('msgtype'),
             stream_payload.get('id', ''),
             finish,
             len(display_text),
-            display_text[:120],
+            self._preview_text(display_text),
         )
         await self.send(to_handle, display_text, stream_meta)
         state['started'] = True
@@ -649,6 +676,77 @@ class WeComChannel(BaseChannel):
             },
         )
 
+    def _resolve_completion_stream_target(
+        self,
+        event: Any,
+        state: dict[str, Any],
+        stream_states: dict[str, dict[str, Any]],
+    ) -> tuple[dict[str, Any], Any]:
+        if state.get('started'):
+            return state, event
+
+        started_states = [item for item in stream_states.values() if item.get('started')]
+        if len(started_states) != 1:
+            return state, event
+
+        target_state = started_states[0]
+        next_text = str(state.get('current_text', '') or '')
+        if next_text:
+            target_state['current_text'] = next_text
+        return target_state, SimpleNamespace(id=target_state.get('state_key', '__default__'))
+
+    @staticmethod
+    def _preview_text(text: Any, *, limit: int = 120) -> str:
+        normalized = str(text or '').replace('\r', '\\r').replace('\n', '\\n')
+        if len(normalized) <= limit:
+            return normalized
+        return f'{normalized[:limit]}...'
+
+    def _log_stream_state_update(
+        self,
+        source: str,
+        event: Any,
+        state: dict[str, Any],
+        changed: bool,
+    ) -> None:
+        current_text = str(state.get('current_text', '') or '')
+        logger.info(
+            'wecom stream state update: source=%s status=%s state_key=%s changed=%s started=%s current_len=%s delta=%s preview=%s',
+            source,
+            getattr(event, 'status', ''),
+            state.get('state_key', ''),
+            changed,
+            bool(state.get('started')),
+            len(current_text),
+            bool(getattr(event, 'delta', False)),
+            self._preview_text(current_text),
+        )
+
+    def _log_response_completion_state(
+        self,
+        reason: str,
+        last_response: Any,
+        delivery_state: dict[str, bool],
+        stream_states: dict[str, dict[str, Any]],
+        *,
+        output_count: int,
+    ) -> None:
+        started = [state['state_key'] for state in stream_states.values() if state.get('started')]
+        unfinished = [
+            state['state_key']
+            for state in stream_states.values()
+            if state.get('started') and not state.get('last_sent_finish')
+        ]
+        logger.info(
+            'wecom response completion state: reason=%s status=%s output_count=%s started=%s unfinished=%s sent=%s',
+            reason,
+            getattr(last_response, 'status', None),
+            output_count,
+            started,
+            unfinished,
+            bool(delivery_state.get('sent')),
+        )
+
     @staticmethod
     def _read_item_field(item: Any, field: str, default: Any = None) -> Any:
         if isinstance(item, dict):
@@ -674,16 +772,63 @@ class WeComChannel(BaseChannel):
         stream_states: dict[str, dict[str, Any]],
     ) -> None:
         if not last_response:
+            self._log_response_completion_state(
+                'no_response',
+                last_response,
+                delivery_state,
+                stream_states,
+                output_count=0,
+            )
+            await self._finish_started_streams_if_needed(
+                to_handle,
+                send_meta,
+                delivery_state,
+                stream_states,
+            )
             return
 
         output = list(getattr(last_response, 'output', None) or [])
         if not output:
+            self._log_response_completion_state(
+                'empty_output',
+                last_response,
+                delivery_state,
+                stream_states,
+                output_count=0,
+            )
+            await self._finish_started_streams_if_needed(
+                to_handle,
+                send_meta,
+                delivery_state,
+                stream_states,
+            )
             return
 
         final_message = output[-1]
         parts = self._extract_message_parts(final_message)
         if not parts:
+            self._log_response_completion_state(
+                'empty_final_parts',
+                last_response,
+                delivery_state,
+                stream_states,
+                output_count=len(output),
+            )
+            await self._finish_started_streams_if_needed(
+                to_handle,
+                send_meta,
+                delivery_state,
+                stream_states,
+            )
             return
+
+        self._log_response_completion_state(
+            'final_output',
+            last_response,
+            delivery_state,
+            stream_states,
+            output_count=len(output),
+        )
 
         if await self._finalize_stream_from_response_output(
             final_message,
@@ -700,6 +845,33 @@ class WeComChannel(BaseChannel):
         logger.info('wecom final response fallback send: parts_count=%s', len(parts))
         await self.send_content_parts(to_handle, parts, send_meta)
         delivery_state['sent'] = True
+
+    async def _finish_started_streams_if_needed(
+        self,
+        to_handle: str,
+        send_meta: dict[str, Any],
+        delivery_state: dict[str, bool],
+        stream_states: dict[str, dict[str, Any]],
+    ) -> bool:
+        started_state_keys = [
+            state['state_key']
+            for state in stream_states.values()
+            if state.get('started') and state.get('current_text') and not state.get('last_sent_finish')
+        ]
+        if not started_state_keys:
+            return False
+
+        logger.info('wecom response completion closing open streams: state_keys=%s', started_state_keys)
+        for state_key in started_state_keys:
+            await self._send_stream_snapshot(
+                to_handle,
+                send_meta,
+                stream_states,
+                delivery_state,
+                SimpleNamespace(id=state_key),
+                finish=True,
+            )
+        return True
 
     async def _finalize_stream_from_response_output(
         self,
@@ -768,6 +940,15 @@ class WeComChannel(BaseChannel):
             bool(response_url),
             len(text or ''),
         )
+        if message.msgtype in ('stream', 'stream_with_template_card'):
+            stream_payload = dict(message.payload.get('stream') or {})
+            logger.info(
+                'wecom outbound stream payload: stream_id=%s finish=%s content_len=%s preview=%s',
+                stream_payload.get('id', ''),
+                bool(stream_payload.get('finish')),
+                len(str(stream_payload.get('content', '') or '')),
+                self._preview_text(stream_payload.get('content', '')),
+            )
 
         if message.mode in (DeliveryMode.RESPOND, DeliveryMode.WELCOME, DeliveryMode.UPDATE):
             command = self.service.build_command(req_id=str(meta['req_id']), message=message)

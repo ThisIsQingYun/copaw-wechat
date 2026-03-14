@@ -100,3 +100,34 @@ def test_send_prefers_websocket_for_reply_mode_before_response_url():
         assert post_calls == []
 
     asyncio.run(run_case())
+
+
+def test_send_logs_stream_payload_details(caplog):
+    class FakeWsClient:
+        def __init__(self):
+            self.commands = []
+
+        async def send_command(self, command):
+            self.commands.append(command)
+
+    async def run_case():
+        config = WeComConfig.from_mapping({'bot_id': 'bot_123', 'secret': 'secret_456'})
+        channel = WeComChannel(process=None, config=config)
+        channel._ws_client = FakeWsClient()
+
+        with caplog.at_level(logging.INFO):
+            await channel.send(
+                'chat_1',
+                'hello',
+                {
+                    'req_id': 'req_stream_1',
+                    'msgtype': 'stream',
+                    'stream': {'id': 'stream_1', 'finish': True},
+                },
+            )
+
+        messages = [record.getMessage() for record in caplog.records]
+        assert any('wecom outbound stream payload:' in message and 'stream_id=stream_1' in message for message in messages)
+        assert any('finish=True' in message and 'content_len=5' in message for message in messages)
+
+    asyncio.run(run_case())
