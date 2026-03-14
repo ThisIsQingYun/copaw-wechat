@@ -13,6 +13,7 @@ from urllib.request import url2pathname
 import httpx
 
 from wecom.runtime_compat import MissingRuntimeDependency, load_copaw_symbols
+from wecom.session_dispatch import LatestSessionTaskMixin
 
 from .api_client import WeComAppApiClient
 from .callback import WeComAppCallbackHandler
@@ -56,7 +57,7 @@ except MissingRuntimeDependency:
     FileContent = None
 
 
-class WeComAppChannel(BaseChannel):
+class WeComAppChannel(LatestSessionTaskMixin, BaseChannel):
     channel = APP_CHANNEL_NAME
 
     def __init__(
@@ -87,6 +88,7 @@ class WeComAppChannel(BaseChannel):
         self._enqueue = None
         self._api_client = WeComAppApiClient(self.config)
         self._media_store = WeComAppMediaStore(self.config.media_dir)
+        self._init_latest_session_dispatch()
         self._callback_handler = None
         if self.config.token and self.config.encoding_aes_key:
             self._callback_handler = WeComAppCallbackHandler(
@@ -172,6 +174,7 @@ class WeComAppChannel(BaseChannel):
 
     async def stop(self):
         logger.info('wecom_app channel stopping')
+        await self._cancel_all_session_tasks()
         if self._callback_server is not None:
             await self._callback_server.stop()
             self._callback_server = None

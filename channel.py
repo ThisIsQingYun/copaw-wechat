@@ -23,6 +23,7 @@ from wecom.crypto import decrypt_media_bytes
 from wecom.media_store import WeComMediaStore
 from wecom.models import ChatType, DeliveryMode, InboundEnvelope, OutboundMessage
 from wecom.runtime_compat import MissingRuntimeDependency, load_copaw_symbols
+from wecom.session_dispatch import LatestSessionTaskMixin
 from wecom.webhook import WeComWebhookHandler
 from wecom.ws.client import WeComWebSocketClient
 from wecom.ws.transport import resolve_transport_factory
@@ -47,7 +48,7 @@ except MissingRuntimeDependency:
     FileContent = None
 
 
-class WeComChannel(BaseChannel):
+class WeComChannel(LatestSessionTaskMixin, BaseChannel):
     channel = CHANNEL_NAME
 
     def __init__(
@@ -87,6 +88,7 @@ class WeComChannel(BaseChannel):
             post_func=self.config.response_post_func,
             timeout_seconds=self.config.response_timeout_seconds,
         )
+        self._init_latest_session_dispatch()
         self._webhook_handler = None
         if self.config.token and self.config.encoding_aes_key:
             self._webhook_handler = WeComWebhookHandler(
@@ -276,6 +278,7 @@ class WeComChannel(BaseChannel):
 
     async def stop(self):
         logger.info('wecom channel stopping')
+        await self._cancel_all_session_tasks()
         if self._receive_task is not None:
             self._receive_task.cancel()
             await asyncio.gather(self._receive_task, return_exceptions=True)

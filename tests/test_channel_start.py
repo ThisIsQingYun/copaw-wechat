@@ -243,3 +243,37 @@ def test_ws_client_send_command_waits_for_ack_and_dispatch_skips_ack_frames():
         assert [item.req_id for item in dispatched] == ['req-inbound']
 
     asyncio.run(run_case())
+
+
+def test_wecom_channel_consume_one_replaces_inflight_session_task():
+    async def run_case():
+        config = WeComConfig.from_mapping({'bot_id': 'bot_123', 'secret': 'secret_456'})
+        channel = WeComChannel(process=None, config=config)
+
+        started = []
+        canceled = []
+        second_done = asyncio.Event()
+
+        async def fake_consume_one_request(payload):
+            started.append(payload['text'])
+            if payload['text'] == 'first':
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    canceled.append(payload['text'])
+                    raise
+            second_done.set()
+
+        channel._consume_one_request = fake_consume_one_request
+
+        await channel.consume_one({'sender_id': 'XuHao', 'text': 'first', 'meta': {}})
+        await asyncio.sleep(0)
+        await channel.consume_one({'sender_id': 'XuHao', 'text': 'second', 'meta': {}})
+        await asyncio.wait_for(second_done.wait(), timeout=1)
+        await asyncio.sleep(0)
+        await channel.stop()
+
+        assert started == ['first', 'second']
+        assert canceled == ['first']
+
+    asyncio.run(run_case())

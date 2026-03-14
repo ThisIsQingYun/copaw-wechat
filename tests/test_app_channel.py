@@ -106,3 +106,37 @@ def test_app_channel_send_media_uploads_then_sends_message():
             assert send_calls[0]['json']['file']['media_id'] == 'MEDIA_UPLOAD_001'
 
     asyncio.run(run_case())
+
+
+def test_app_channel_consume_one_replaces_inflight_session_task():
+    async def run_case():
+        config = WeComAppConfig.from_mapping({})
+        channel = WeComAppChannel(process=None, config=config)
+
+        started = []
+        canceled = []
+        second_done = asyncio.Event()
+
+        async def fake_consume_one_request(payload):
+            started.append(payload['text'])
+            if payload['text'] == 'first':
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    canceled.append(payload['text'])
+                    raise
+            second_done.set()
+
+        channel._consume_one_request = fake_consume_one_request
+
+        await channel.consume_one({'sender_id': 'XuHao', 'text': 'first', 'meta': {}})
+        await asyncio.sleep(0)
+        await channel.consume_one({'sender_id': 'XuHao', 'text': 'second', 'meta': {}})
+        await asyncio.wait_for(second_done.wait(), timeout=1)
+        await asyncio.sleep(0)
+        await channel.stop()
+
+        assert started == ['first', 'second']
+        assert canceled == ['first']
+
+    asyncio.run(run_case())
