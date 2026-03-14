@@ -25,5 +25,6 @@ def load_copaw_symbols() -> dict[str, object]:
         'TextContent': getattr(runtime_module, 'TextContent'),
         'ImageContent': getattr(runtime_module, 'ImageContent', None),
         'AudioContent': getattr(runtime_module, 'AudioContent', None),
+        'VideoContent': getattr(runtime_module, 'VideoContent', None),
         'FileContent': getattr(runtime_module, 'FileContent', None),
     }

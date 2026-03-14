@@ -1,8 +1,9 @@
-﻿from .active_reply import ResponseUrlReplyClient
+from .active_reply import ResponseUrlReplyClient
+from .app import WeComAppApiClient, WeComAppCallbackHandler, WeComAppChannel, WeComAppConfig, WeComAppMediaStore
+from .channel import WeComChannel
 from .config import WeComConfig
 from .crypto import WeComCrypto, decrypt_media_bytes, encrypt_media_bytes
 from .docs_api import CONTENT_TYPE_MARKDOWN, WeComDocType, WeComDocsToolClient
-from .channel import WeComChannel
 from .constants import (
     CHANNEL_NAME,
     DEFAULT_WEBSOCKET_URL,
@@ -26,6 +27,11 @@ __all__ = [
     'ENV_RECEIVE_ID',
     'ENV_WEBSOCKET_URL',
     'ResponseUrlReplyClient',
+    'WeComAppApiClient',
+    'WeComAppCallbackHandler',
+    'WeComAppChannel',
+    'WeComAppConfig',
+    'WeComAppMediaStore',
     'WeComChannel',
     'WeComConfig',
     'WeComCrypto',

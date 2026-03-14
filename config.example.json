@@ -23,6 +23,34 @@
       "reconnect_delay_seconds": 5,
       "auto_reconnect": true,
       "auto_receive_background": true
+    },
+    "wecom_app": {
+      "enabled": false,
+      "bot_prefix": "",
+      "filter_tool_messages": false,
+      "filter_thinking": false,
+      "corp_id": "",
+      "agent_secret": "",
+      "agent_id": 0,
+      "token": "",
+      "encoding_aes_key": "",
+      "receive_id": "",
+      "channel_name": "wecom_app",
+      "dm_policy": "open",
+      "group_policy": "open",
+      "allow_from": [],
+      "deny_message": "",
+      "require_mention": false,
+      "media_dir": "~/.copaw/media/wecom_app",
+      "callback_host": "0.0.0.0",
+      "callback_port": 19091,
+      "callback_path": "/wecom/app/callback",
+      "callback_base_url": "",
+      "auto_start_callback_server": true,
+      "request_timeout_seconds": 10,
+      "token_refresh_skew_seconds": 300,
+      "api_base_url": "https://qyapi.weixin.qq.com",
+      "egress_proxy_url": ""
     }
   }
 }

@@ -1,5 +1,9 @@
-﻿__pycache__/
+__pycache__/
 *.py[cod]
 .pytest_cache/
 .tmp/
 .tmp-tests/
+.tmp-docs-selfbuilt/
+task_plan.md
+findings.md
+progress.md
