@@ -43,6 +43,24 @@ class StaticTransport:
         return None
 
 
+class QueueTransport:
+    def __init__(self, payloads):
+        self.sent = []
+        self.closed = False
+        self._payloads = asyncio.Queue()
+        for payload in payloads:
+            self._payloads.put_nowait(payload)
+
+    async def send_json(self, payload):
+        self.sent.append(payload)
+
+    async def recv_json(self):
+        return await self._payloads.get()
+
+    async def close(self):
+        self.closed = True
+
+
 def test_channel_start_launches_background_receive_loop_by_default():
     async def run_case():
         transport = BlockingTransport()
@@ -160,5 +178,47 @@ def test_ws_client_non_heartbeat_frames_emit_detailed_info_logs(caplog):
         assert envelope.is_heartbeat() is False
         assert any('wecom websocket frame received:' in message and 'body_keys=errcode,errmsg,msgid' in message for message in messages)
         assert any('errcode=0' in message and 'errmsg=ok' in message for message in messages)
+
+    asyncio.run(run_case())
+
+
+def test_ws_client_send_command_waits_for_ack_and_dispatch_skips_ack_frames():
+    async def run_case():
+        transport = QueueTransport(
+            [
+                {
+                    'cmd': '',
+                    'headers': {'req_id': 'req-ack'},
+                    'body': {},
+                },
+                {
+                    'cmd': 'message',
+                    'headers': {'req_id': 'req-inbound'},
+                    'body': {'msgtype': 'text', 'msgid': 'msg_1'},
+                },
+            ]
+        )
+        config = WeComConfig.from_mapping({'bot_id': 'bot_123', 'secret': 'secret_456'})
+        client = WeComWebSocketClient(config=config, transport_factory=lambda: None)
+        client._transport = transport
+
+        dispatched = []
+
+        send_task = asyncio.create_task(
+            client.send_command(
+                {
+                    'cmd': 'aibot_respond_msg',
+                    'headers': {'req_id': 'req-ack'},
+                    'body': {'msgtype': 'stream'},
+                }
+            )
+        )
+        await asyncio.sleep(0)
+        envelope = await client.dispatch_once(lambda item: dispatched.append(item))
+        ack_envelope = await send_task
+
+        assert ack_envelope.req_id == 'req-ack'
+        assert envelope.req_id == 'req-inbound'
+        assert [item.req_id for item in dispatched] == ['req-inbound']
 
     asyncio.run(run_case())

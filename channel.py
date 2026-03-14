@@ -271,7 +271,7 @@ class WeComChannel(BaseChannel):
     async def pump_once(self):
         if self._ws_client is None:
             raise RuntimeError('WebSocket client has not been started')
-        envelope = await self._ws_client.receive_one()
+        envelope = await self._ws_client.receive_dispatchable()
         return await self._handle_envelope(envelope)
 
     async def stop(self):

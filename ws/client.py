@@ -20,6 +20,7 @@ class WeComWebSocketClient:
         self._transport = None
         self._stopped = False
         self._background_tasks: list[asyncio.Task] = []
+        self._pending_acks: dict[str, asyncio.Future] = {}
 
     @property
     def transport(self):
@@ -30,24 +31,52 @@ class WeComWebSocketClient:
         candidate = self._transport_factory()
         self._transport = await candidate if inspect.isawaitable(candidate) else candidate
         self._stopped = False
-        await self.send_command({
-            'cmd': 'aibot_subscribe',
-            'headers': {'req_id': self._new_req_id('subscribe')},
-            'body': {
-                'bot_id': self._config.bot_id,
-                'secret': self._config.secret,
+        await self.send_command(
+            {
+                'cmd': 'aibot_subscribe',
+                'headers': {'req_id': self._new_req_id('subscribe')},
+                'body': {
+                    'bot_id': self._config.bot_id,
+                    'secret': self._config.secret,
+                },
             },
-        })
+            wait_for_ack=False,
+        )
         logger.info('wecom websocket subscribe sent: bot_id=%s', (self._config.bot_id or '')[:12])
 
-    async def send_command(self, command: dict) -> None:
+    async def send_command(self, command: dict, *, wait_for_ack: bool = True) -> InboundEnvelope | None:
+        req_id = str(((command.get('headers') or {}).get('req_id')) or '')
+        pending_ack = None
+        if wait_for_ack and req_id:
+            pending_ack = asyncio.get_running_loop().create_future()
+            self._pending_acks[req_id] = pending_ack
         await self._require_transport().send_json(command)
+        if pending_ack is None:
+            return None
+        try:
+            envelope = await asyncio.wait_for(pending_ack, timeout=self._config.response_timeout_seconds)
+        except asyncio.TimeoutError:
+            logger.warning(
+                'wecom websocket ack timeout: cmd=%s req_id=%s timeout=%s',
+                command.get('cmd', ''),
+                req_id,
+                self._config.response_timeout_seconds,
+            )
+            return None
+        finally:
+            existing = self._pending_acks.get(req_id)
+            if existing is pending_ack:
+                self._pending_acks.pop(req_id, None)
+        return envelope
 
     async def send_ping(self) -> None:
-        await self.send_command({
-            'cmd': 'ping',
-            'headers': {'req_id': self._new_req_id('ping')},
-        })
+        await self.send_command(
+            {
+                'cmd': 'ping',
+                'headers': {'req_id': self._new_req_id('ping')},
+            },
+            wait_for_ack=False,
+        )
 
     async def receive_one(self) -> InboundEnvelope:
         payload = await self._require_transport().recv_json()
@@ -67,8 +96,18 @@ class WeComWebSocketClient:
             )
         return envelope
 
+    async def receive_dispatchable(self) -> InboundEnvelope:
+        while True:
+            envelope = await self.receive_one()
+            if self._resolve_pending_ack(envelope):
+                continue
+            if self._is_empty_frame(envelope):
+                logger.debug('wecom websocket empty frame ignored: req_id=%s', envelope.req_id)
+                continue
+            return envelope
+
     async def dispatch_once(self, on_envelope) -> InboundEnvelope:
-        envelope = await self.receive_one()
+        envelope = await self.receive_dispatchable()
         result = on_envelope(envelope)
         if inspect.isawaitable(result):
             await result
@@ -158,6 +197,31 @@ class WeComWebSocketClient:
         if self._transport is None:
             raise RuntimeError('WebSocket transport has not been initialized')
         return self._transport
+
+    def _resolve_pending_ack(self, envelope: InboundEnvelope) -> bool:
+        req_id = envelope.req_id
+        if not req_id:
+            return False
+        future = self._pending_acks.get(req_id)
+        if future is None:
+            return False
+        if not future.done():
+            future.set_result(envelope)
+        body = envelope.body or {}
+        body_keys = ','.join(sorted(str(key) for key in body.keys())) or '-'
+        logger.info(
+            'wecom websocket ack received: cmd=%s req_id=%s body_keys=%s errcode=%s errmsg=%s',
+            envelope.cmd,
+            req_id,
+            body_keys,
+            body.get('errcode', ''),
+            body.get('errmsg', ''),
+        )
+        return True
+
+    @staticmethod
+    def _is_empty_frame(envelope: InboundEnvelope) -> bool:
+        return not envelope.cmd and not (envelope.body or {})
 
     @staticmethod
     def _new_req_id(prefix: str) -> str:
